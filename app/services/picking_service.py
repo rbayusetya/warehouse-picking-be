@@ -13,8 +13,8 @@ from app.models import (
 )
 from app.services import s3_service
 
-# Import the shared Excel parser
-from picking_excel import parse_picking_workbook  # noqa: E402
+# Import the Excel parser
+from app.picking_excel import parse_picking_workbook  # noqa: E402
 
 
 def _now_text() -> str:

@@ -15,9 +15,6 @@ RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r re
 # Copy app code
 COPY backend/ .
 
-# Copy the shared excel parser from project root
-COPY picking_excel.py .
-
 RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 8000
