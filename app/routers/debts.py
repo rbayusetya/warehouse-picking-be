@@ -17,13 +17,14 @@ async def list_debts(user: User = Depends(require_user), db: AsyncSession = Depe
     for row in rows:
         pl = row["picking_list"]
         item = row["item"]
+        truck = pl.truck
         result.append({
             "picking_list": {
                 "id": pl.id,
                 "picking_id": pl.picking_id,
                 "date": pl.date,
-                "driver": pl.driver,
-                "expedition": pl.expedition,
+                "driver": truck.driver_name,
+                "expedition": truck.expedition,
             },
             "item": {
                 "id": item.id,

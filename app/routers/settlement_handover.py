@@ -32,8 +32,8 @@ async def list_settlement_handovers(
                     "id": h.settlement.item.picking_list.id,
                     "picking_id": h.settlement.item.picking_list.picking_id,
                     "date": h.settlement.item.picking_list.date,
-                    "driver": h.settlement.item.picking_list.driver,
-                    "expedition": h.settlement.item.picking_list.expedition,
+                    "driver": h.settlement.item.picking_list.truck.driver_name,
+                    "expedition": h.settlement.item.picking_list.truck.expedition,
                 },
                 "item": {
                     "id": h.settlement.item.id,

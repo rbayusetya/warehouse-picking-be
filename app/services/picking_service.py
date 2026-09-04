@@ -1,14 +1,15 @@
 from __future__ import annotations
-import copy
 import uuid
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import (
     PickingList, PickingItem, PickingItemDealer, Settlement,
     SettlementHandover, HistoryEntry, Handover, DealerConfirmation, DealerReturn,
+    Truck, KsuItem, Dealer, SalesOrder,
 )
 from app.services import s3_service
 
@@ -20,17 +21,92 @@ def _now_text() -> str:
     return datetime.now().strftime("%d/%m/%Y %H:%M")
 
 
+# ─── Master table upsert helpers ───
+
+
+async def _upsert_truck(db: AsyncSession, expedition: str, plate: str, driver_name: str) -> Truck:
+    """Find or create a Truck record."""
+    stmt = select(Truck).where(
+        Truck.expedition == expedition,
+        Truck.plate == plate,
+        Truck.driver_name == driver_name,
+    )
+    result = await db.execute(stmt)
+    truck = result.scalar_one_or_none()
+    if truck:
+        return truck
+    truck = Truck(expedition=expedition, plate=plate, driver_name=driver_name)
+    db.add(truck)
+    await db.flush()
+    return truck
+
+
+async def _upsert_ksu_item(db: AsyncSession, code: str, name: str, category: str) -> KsuItem:
+    """Find or create a KsuItem record."""
+    stmt = select(KsuItem).where(KsuItem.code == code)
+    result = await db.execute(stmt)
+    ksu = result.scalar_one_or_none()
+    if ksu:
+        return ksu
+    ksu = KsuItem(code=code, name=name, category=category)
+    db.add(ksu)
+    await db.flush()
+    return ksu
+
+
+async def _upsert_dealer(db: AsyncSession, code: str, name: str) -> Dealer:
+    """Find or create a Dealer record."""
+    stmt = select(Dealer).where(Dealer.code == code)
+    result = await db.execute(stmt)
+    dealer = result.scalar_one_or_none()
+    if dealer:
+        return dealer
+    dealer = Dealer(code=code, name=name)
+    db.add(dealer)
+    await db.flush()
+    return dealer
+
+
+async def _upsert_sales_order(
+    db: AsyncSession, so_number: str, ksu_item_id: str, ksu_quantity: float, dealer_id: str,
+) -> SalesOrder:
+    """Find or create a SalesOrder record."""
+    stmt = select(SalesOrder).where(SalesOrder.so_number == so_number)
+    result = await db.execute(stmt)
+    so = result.scalar_one_or_none()
+    if so:
+        return so
+    so = SalesOrder(
+        so_number=so_number,
+        ksu_item_id=ksu_item_id,
+        ksu_quantity=ksu_quantity,
+        dealer_id=dealer_id,
+    )
+    db.add(so)
+    await db.flush()
+    return so
+
+
+# ─── Import ───
+
+
 async def import_excel(db: AsyncSession, file_path: str, filename: str, uploaded_by: str) -> list[dict]:
     parsed = parse_picking_workbook(file_path)
 
     for list_data in parsed:
+        # Upsert truck
+        truck = await _upsert_truck(
+            db,
+            expedition=list_data["expedition"],
+            plate=list_data.get("plate", ""),
+            driver_name=list_data["driver"],
+        )
+
         picking_list = PickingList(
             picking_id=list_data["id"],
             date=list_data["date"],
             no_ds=list_data.get("noDs", ""),
-            expedition=list_data["expedition"],
-            plate=list_data.get("plate", ""),
-            driver=list_data["driver"],
+            truck_id=truck.id,
             status="draft",
             source_file=filename,
         )
@@ -44,11 +120,20 @@ async def import_excel(db: AsyncSession, file_path: str, filename: str, uploaded
         picking_list.history.append(history_entry)
 
         for item_data in list_data["items"]:
-            item = PickingItem(
-                picking_list=picking_list,
+            # Upsert KSU item
+            ksu = await _upsert_ksu_item(
+                db,
                 code=item_data["code"],
                 name=item_data["name"],
                 category=item_data["category"],
+            )
+
+            item = PickingItem(
+                picking_list=picking_list,
+                ksu_item_id=ksu.id,
+                code=item_data["code"],       # snapshot
+                name=item_data["name"],       # snapshot
+                category=item_data["category"],  # snapshot
                 planned_qty=item_data["plannedQty"],
                 actual_qty=0,
                 confirmed=False,
@@ -56,14 +141,31 @@ async def import_excel(db: AsyncSession, file_path: str, filename: str, uploaded
             )
 
             for dealer_data in item_data.get("dealers", []):
-                dealer = PickingItemDealer(
-                    item=item,
-                    no_so=dealer_data.get("noSo", ""),
+                # Upsert dealer
+                dealer = await _upsert_dealer(
+                    db,
                     code=dealer_data["code"],
-                    dealer=dealer_data["dealer"],
+                    name=dealer_data["dealer"],
+                )
+
+                # Upsert sales order if no_so present
+                no_so = dealer_data.get("noSo", "")
+                if no_so:
+                    await _upsert_sales_order(
+                        db,
+                        so_number=no_so,
+                        ksu_item_id=ksu.id,
+                        ksu_quantity=item_data["plannedQty"],
+                        dealer_id=dealer.id,
+                    )
+
+                dealer_link = PickingItemDealer(
+                    item=item,
+                    dealer_id=dealer.id,
+                    no_so=no_so,
                     qty=dealer_data["qty"],
                 )
-                item.dealers.append(dealer)
+                item.dealers.append(dealer_link)
 
             picking_list.items.append(item)
 
@@ -73,32 +175,46 @@ async def import_excel(db: AsyncSession, file_path: str, filename: str, uploaded
     return parsed
 
 
+# ─── Query helpers ───
+
+
+def _picking_list_eager_load():
+    """Return query options for loading a PickingList with all relationships."""
+    return [
+        selectinload(PickingList.truck),
+        selectinload(PickingList.items)
+            .selectinload(PickingItem.dealers)
+            .selectinload(PickingItemDealer.dealer),
+        selectinload(PickingList.items)
+            .selectinload(PickingItem.settlements),
+        selectinload(PickingList.items)
+            .selectinload(PickingItem.dealer_confirmations)
+            .selectinload(DealerConfirmation.return_record),
+        selectinload(PickingList.handover),
+        selectinload(PickingList.history),
+    ]
+
+
 async def get_picking_lists(
     db: AsyncSession,
     user_role: str,
     user_expedition: str | None,
     user_dealer_code: str | None,
 ) -> list[PickingList]:
-    from sqlalchemy.orm import selectinload
     stmt = (
         select(PickingList)
-        .options(
-            selectinload(PickingList.items).selectinload(PickingItem.dealers),
-            selectinload(PickingList.items).selectinload(PickingItem.settlements),
-            selectinload(PickingList.items).selectinload(PickingItem.dealer_confirmations)
-            .selectinload(DealerConfirmation.return_record),
-            selectinload(PickingList.handover),
-            selectinload(PickingList.history),
-        )
+        .options(*_picking_list_eager_load())
         .order_by(PickingList.created_at.desc())
     )
 
     if user_role == "ekspedisi" and user_expedition:
-        stmt = stmt.where(PickingList.expedition == user_expedition)
+        stmt = stmt.join(Truck).where(Truck.expedition == user_expedition)
     elif user_role == "dealer" and user_dealer_code:
         stmt = stmt.where(
             PickingList.items.any(
-                PickingItem.dealers.any(PickingItemDealer.code == user_dealer_code)
+                PickingItem.dealers.any(
+                    PickingItemDealer.dealer.has(Dealer.code == user_dealer_code)
+                )
             )
         )
 
@@ -107,17 +223,9 @@ async def get_picking_lists(
 
 
 async def get_picking_list(db: AsyncSession, list_id: str) -> PickingList | None:
-    from sqlalchemy.orm import selectinload
     stmt = (
         select(PickingList)
-        .options(
-            selectinload(PickingList.items).selectinload(PickingItem.dealers),
-            selectinload(PickingList.items).selectinload(PickingItem.settlements),
-            selectinload(PickingList.items).selectinload(PickingItem.dealer_confirmations)
-            .selectinload(DealerConfirmation.return_record),
-            selectinload(PickingList.handover),
-            selectinload(PickingList.history),
-        )
+        .options(*_picking_list_eager_load())
         .where(PickingList.picking_id == list_id)
         .order_by(PickingList.created_at.desc())
     )
@@ -269,7 +377,6 @@ async def create_settlement(
     db: AsyncSession, picking_item_id: str, qty: float, date: str,
     driver: str, note: str, user_name: str,
 ) -> Settlement | None:
-    from sqlalchemy.orm import selectinload
     stmt = (
         select(PickingItem)
         .options(
@@ -308,8 +415,6 @@ async def create_settlement(
 async def create_settlement_handover(
     db: AsyncSession, settlement_id: str, data: dict, user_name: str,
 ) -> SettlementHandover | None:
-    from sqlalchemy.orm import selectinload
-
     stmt = (
         select(Settlement)
         .options(
@@ -360,12 +465,13 @@ async def create_settlement_handover(
 async def list_settlement_handovers(
     db: AsyncSession, user_role: str, user_expedition: str | None, user_dealer_code: str | None,
 ) -> list[SettlementHandover]:
-    from sqlalchemy.orm import selectinload
-
     stmt = (
         select(SettlementHandover)
         .options(
-            selectinload(SettlementHandover.settlement).selectinload(Settlement.item).selectinload(PickingItem.picking_list),
+            selectinload(SettlementHandover.settlement)
+                .selectinload(Settlement.item)
+                .selectinload(PickingItem.picking_list)
+                .selectinload(PickingList.truck),
         )
         .order_by(SettlementHandover.created_at.desc())
     )
@@ -374,35 +480,36 @@ async def list_settlement_handovers(
 
 
 async def get_dealer_items(db: AsyncSession, dealer_code: str) -> list[dict]:
-    from sqlalchemy.orm import selectinload
     stmt = (
         select(PickingItem)
         .options(
-            selectinload(PickingItem.picking_list),
-            selectinload(PickingItem.dealers),
+            selectinload(PickingItem.picking_list).selectinload(PickingList.truck),
+            selectinload(PickingItem.dealers).selectinload(PickingItemDealer.dealer),
             selectinload(PickingItem.settlements),
             selectinload(PickingItem.dealer_confirmations)
-            .selectinload(DealerConfirmation.return_record),
+                .selectinload(DealerConfirmation.return_record),
         )
         .join(PickingItemDealer)
-        .where(PickingItemDealer.code == dealer_code)
+        .join(Dealer)
+        .where(Dealer.code == dealer_code)
     )
     result = await db.execute(stmt)
-    items = list(result.scalars().all())
+    items = list(result.scalars().unique().all())
 
     output = []
     for item in items:
         pl = item.picking_list
-        dealer_info = next((d for d in item.dealers if d.code == dealer_code), None)
-        if not dealer_info:
+        truck = pl.truck
+        dealer_link = next((d for d in item.dealers if d.dealer.code == dealer_code), None)
+        if not dealer_link:
             continue
         conf = next((c for c in item.dealer_confirmations if c.dealer_code == dealer_code), None)
         output.append({
             "picking_list_id": pl.id,
             "picking_id": pl.picking_id,
             "date": pl.date,
-            "driver": pl.driver,
-            "expedition": pl.expedition,
+            "driver": truck.driver_name,
+            "expedition": truck.expedition,
             "item_id": item.id,
             "item_name": item.name,
             "item_code": item.code,
@@ -411,8 +518,8 @@ async def get_dealer_items(db: AsyncSession, dealer_code: str) -> list[dict]:
             "actual_qty": item.actual_qty,
             "note": item.note,
             "dealer_code": dealer_code,
-            "dealer_name": dealer_info.dealer,
-            "dealer_qty": dealer_info.qty,
+            "dealer_name": dealer_link.dealer.name,
+            "dealer_qty": dealer_link.qty,
             "confirmation_status": conf.status if conf else None,
             "settlements": [{"qty": s.qty, "date": s.date, "driver": s.driver, "note": s.note, "by": s.by} for s in item.settlements],
         })
@@ -422,7 +529,6 @@ async def get_dealer_items(db: AsyncSession, dealer_code: str) -> list[dict]:
 async def create_dealer_confirmation(
     db: AsyncSession, data: dict, user_name: str,
 ) -> DealerConfirmation | None:
-    from sqlalchemy.orm import selectinload
     stmt = (
         select(PickingItem)
         .options(selectinload(PickingItem.picking_list))

@@ -90,14 +90,15 @@ async def list_picking(user: User = Depends(require_user), db: AsyncSession = De
     )
     result = []
     for l in lists:
+        truck = l.truck
         result.append({
             "id": l.id,
             "picking_id": l.picking_id,
             "date": l.date,
             "no_ds": l.no_ds,
-            "expedition": l.expedition,
-            "plate": l.plate,
-            "driver": l.driver,
+            "expedition": truck.expedition,
+            "plate": truck.plate,
+            "driver": truck.driver_name,
             "status": l.status,
             "source_file": l.source_file,
             "handover": {
@@ -116,8 +117,8 @@ async def list_picking(user: User = Depends(require_user), db: AsyncSession = De
                     "planned_qty": i.planned_qty, "actual_qty": i.actual_qty,
                     "confirmed": i.confirmed, "note": i.note,
                     "dealers": [
-                        {"no_so": d.no_so, "code": d.code,
-                         "dealer": d.dealer, "qty": d.qty}
+                        {"no_so": d.no_so, "code": d.dealer.code,
+                         "dealer": d.dealer.name, "qty": d.qty}
                         for d in i.dealers
                     ],
                     "settlements": [
@@ -152,7 +153,62 @@ async def get_detail(list_id: str, user: User = Depends(require_user), db: Async
     pl = await picking_service.get_picking_list(db, list_id)
     if not pl:
         raise HTTPException(status_code=404, detail="Picking list not found")
-    return pl
+    # Serialize with truck FK fields
+    truck = pl.truck
+    return {
+        "id": pl.id,
+        "picking_id": pl.picking_id,
+        "date": pl.date,
+        "no_ds": pl.no_ds,
+        "expedition": truck.expedition,
+        "plate": truck.plate,
+        "driver": truck.driver_name,
+        "status": pl.status,
+        "source_file": pl.source_file,
+        "handover": {
+            "admin_name": pl.handover.admin_name,
+            "driver_name": pl.handover.driver_name,
+            "signature_admin_url": pl.handover.signature_admin_url,
+            "signature_driver_url": pl.handover.signature_driver_url,
+            "created_by": pl.handover.created_by,
+            "created_at": pl.handover.created_at,
+        } if pl.handover else None,
+        "history": [{"at": h.at, "by": h.by, "text": h.text} for h in pl.history],
+        "items": [
+            {
+                "id": i.id, "code": i.code, "name": i.name,
+                "category": i.category,
+                "planned_qty": i.planned_qty, "actual_qty": i.actual_qty,
+                "confirmed": i.confirmed, "note": i.note,
+                "dealers": [
+                    {"no_so": d.no_so, "code": d.dealer.code,
+                     "dealer": d.dealer.name, "qty": d.qty}
+                    for d in i.dealers
+                ],
+                "settlements": [
+                    {"qty": s.qty, "date": s.date, "driver": s.driver,
+                     "note": s.note, "by": s.by, "at": s.at}
+                    for s in i.settlements
+                ],
+                "dealer_confirmations": [
+                    {
+                        "id": dc.id, "dealer_code": dc.dealer_code,
+                        "status": dc.status,
+                        "signature_dealer_url": dc.signature_dealer_url,
+                        "signature_driver_url": dc.signature_driver_url,
+                        "created_at": dc.created_at,
+                        "return_record": {
+                            "driver": dc.return_record.driver,
+                            "return_date": dc.return_record.return_date,
+                            "notes": dc.return_record.notes,
+                        } if dc.return_record else None,
+                    }
+                    for dc in i.dealer_confirmations
+                ],
+            }
+            for i in pl.items
+        ],
+    }
 
 
 @router.put("/{list_id}/items")
