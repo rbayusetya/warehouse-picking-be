@@ -23,12 +23,8 @@ async def get_db():
 
 async def init_db():
     # Run Alembic migrations synchronously before uvicorn starts
-    import asyncio
     from alembic.config import Config
     from alembic.command import upgrade
 
-    def _run_migration():
-        alembic_cfg = Config("alembic.ini")
-        upgrade(alembic_cfg, "head")
-
-    await asyncio.to_thread(_run_migration)
+    alembic_cfg = Config("alembic.ini")
+    upgrade(alembic_cfg, "head")

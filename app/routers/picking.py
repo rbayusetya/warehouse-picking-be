@@ -4,21 +4,93 @@ import os
 import tempfile
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import require_user, require_admin_kepala
 from app.models import User
-from app.schemas.picking import (
-    PickingListOut, PickingListSummary, PickingItemUpdate,
-    DashboardStats, DebtItemOut, HandoverCreate, HandoverOut,
-)
+from app.schemas.picking import DashboardStats, HandoverCreate
 from app.services import picking_service
 
 logger = logging.getLogger("picking.upload")
 
 router = APIRouter(prefix="/api/picking", tags=["picking"])
+
+
+def _serialize_picking_list(row):
+    return {
+        "id": row.id,
+        "picking_id": row.picking_id,
+        "date": row.date,
+        "no_ds": row.no_ds,
+        "expedition": row.expedition,
+        "plate": row.plate,
+        "driver": row.driver,
+        "status": row.status,
+        "source_file": row.source_file,
+        "handover": {
+            "admin_name": row.handover.admin_name,
+            "driver_name": row.handover.driver_name,
+            "signature_admin_url": row.handover.signature_admin_url,
+            "signature_driver_url": row.handover.signature_driver_url,
+            "created_by": row.handover.created_by,
+            "created_at": row.handover.created_at,
+        } if row.handover else None,
+        "history": [
+            {"at": item.at, "by": item.by, "text": item.text}
+            for item in row.history
+        ],
+        "items": [
+            {
+                "id": item.id,
+                "code": item.code,
+                "name": item.name,
+                "category": item.category,
+                "planned_qty": item.planned_qty,
+                "actual_qty": item.actual_qty,
+                "confirmed": item.confirmed,
+                "note": item.note,
+                "dealers": [
+                    {
+                        "no_so": dealer.no_so,
+                        "code": dealer.code,
+                        "dealer": dealer.dealer_name,
+                        "qty": dealer.qty,
+                    }
+                    for dealer in item.dealers
+                ],
+                "settlements": [
+                    {
+                        "qty": settlement.qty,
+                        "date": settlement.date.isoformat(),
+                        "driver": settlement.driver,
+                        "note": settlement.note,
+                        "by": settlement.by,
+                        "at": settlement.at,
+                    }
+                    for settlement in item.settlements
+                ],
+                "dealer_confirmations": [
+                    {
+                        "id": confirmation.id,
+                        "dealer_code": confirmation.dealer_code,
+                        "status": confirmation.status,
+                        "signature_dealer_url": confirmation.signature_dealer_url,
+                        "signature_driver_url": confirmation.signature_driver_url,
+                        "created_at": confirmation.created_at,
+                        "return_record": {
+                            "driver": confirmation.return_record.driver,
+                            "return_date": confirmation.return_record.return_date.isoformat(),
+                            "notes": confirmation.return_record.notes,
+                        } if confirmation.return_record else None,
+                    }
+                    for confirmation in item.dealer_confirmations
+                ],
+            }
+            for item in row.items
+        ],
+    }
 
 
 @router.post("/upload")
@@ -47,7 +119,9 @@ async def upload_excel(
                     status_code=400,
                     detail=f"File xlsx tidak valid. 200 byte pertama: {head[:80].hex()}",
                 )
-        result = await picking_service.import_excel(db, tmp.name, file.filename, user.name)
+        result = await picking_service.import_excel(
+            db, tmp.name, file.filename, user.name, user.id
+        )
         return {
             "status": "ok",
             "imported_count": len(result),
@@ -69,12 +143,12 @@ async def dashboard(user: User = Depends(require_user), db: AsyncSession = Depen
     )
     total = len(lists)
     draft_count = sum(1 for l in lists if l.status == "draft")
-    picked_count = sum(1 for l in lists if l.status == "picked")
+    picked_count = sum(1 for l in lists if l.status in ("picked", "handover_completed"))
     handover_count = sum(1 for l in lists if l.handover)
     total_items = sum(sum(i.planned_qty for i in l.items) for l in lists)
     total_debt = sum(
         max(sum(i.planned_qty for i in l.items) - sum(i.actual_qty for i in l.items), 0)
-        for l in lists if l.status in ("picked",) or l.handover
+        for l in lists if l.status in ("picked", "handover_completed") or l.handover
     )
     return DashboardStats(
         total_picking=total, draft_count=draft_count,
@@ -88,64 +162,7 @@ async def list_picking(user: User = Depends(require_user), db: AsyncSession = De
     lists = await picking_service.get_picking_lists(
         db, user.role, user.expedition, user.dealer_code
     )
-    result = []
-    for l in lists:
-        truck = l.truck
-        result.append({
-            "id": l.id,
-            "picking_id": l.picking_id,
-            "date": l.date,
-            "no_ds": l.no_ds,
-            "expedition": truck.expedition,
-            "plate": truck.plate,
-            "driver": truck.driver_name,
-            "status": l.status,
-            "source_file": l.source_file,
-            "handover": {
-                "admin_name": l.handover.admin_name,
-                "driver_name": l.handover.driver_name,
-                "signature_admin_url": l.handover.signature_admin_url,
-                "signature_driver_url": l.handover.signature_driver_url,
-                "created_by": l.handover.created_by,
-                "created_at": l.handover.created_at,
-            } if l.handover else None,
-            "history": [{"at": h.at, "by": h.by, "text": h.text} for h in l.history],
-            "items": [
-                {
-                    "id": i.id, "code": i.code, "name": i.name,
-                    "category": i.category,
-                    "planned_qty": i.planned_qty, "actual_qty": i.actual_qty,
-                    "confirmed": i.confirmed, "note": i.note,
-                    "dealers": [
-                        {"no_so": d.no_so, "code": d.dealer.code,
-                         "dealer": d.dealer.name, "qty": d.qty}
-                        for d in i.dealers
-                    ],
-                    "settlements": [
-                        {"qty": s.qty, "date": s.date, "driver": s.driver,
-                         "note": s.note, "by": s.by, "at": s.at}
-                        for s in i.settlements
-                    ],
-                    "dealer_confirmations": [
-                        {
-                            "id": dc.id, "dealer_code": dc.dealer_code,
-                            "status": dc.status,
-                            "signature_dealer_url": dc.signature_dealer_url,
-                            "signature_driver_url": dc.signature_driver_url,
-                            "created_at": dc.created_at,
-                            "return_record": {
-                                "driver": dc.return_record.driver,
-                                "return_date": dc.return_record.return_date,
-                                "notes": dc.return_record.notes,
-                            } if dc.return_record else None,
-                        }
-                        for dc in i.dealer_confirmations
-                    ],
-                }
-                for i in l.items
-            ],
-        })
-    return {"lists": result}
+    return {"lists": [_serialize_picking_list(row) for row in lists]}
 
 
 @router.get("/{list_id}")
@@ -153,62 +170,7 @@ async def get_detail(list_id: str, user: User = Depends(require_user), db: Async
     pl = await picking_service.get_picking_list(db, list_id)
     if not pl:
         raise HTTPException(status_code=404, detail="Picking list not found")
-    # Serialize with truck FK fields
-    truck = pl.truck
-    return {
-        "id": pl.id,
-        "picking_id": pl.picking_id,
-        "date": pl.date,
-        "no_ds": pl.no_ds,
-        "expedition": truck.expedition,
-        "plate": truck.plate,
-        "driver": truck.driver_name,
-        "status": pl.status,
-        "source_file": pl.source_file,
-        "handover": {
-            "admin_name": pl.handover.admin_name,
-            "driver_name": pl.handover.driver_name,
-            "signature_admin_url": pl.handover.signature_admin_url,
-            "signature_driver_url": pl.handover.signature_driver_url,
-            "created_by": pl.handover.created_by,
-            "created_at": pl.handover.created_at,
-        } if pl.handover else None,
-        "history": [{"at": h.at, "by": h.by, "text": h.text} for h in pl.history],
-        "items": [
-            {
-                "id": i.id, "code": i.code, "name": i.name,
-                "category": i.category,
-                "planned_qty": i.planned_qty, "actual_qty": i.actual_qty,
-                "confirmed": i.confirmed, "note": i.note,
-                "dealers": [
-                    {"no_so": d.no_so, "code": d.dealer.code,
-                     "dealer": d.dealer.name, "qty": d.qty}
-                    for d in i.dealers
-                ],
-                "settlements": [
-                    {"qty": s.qty, "date": s.date, "driver": s.driver,
-                     "note": s.note, "by": s.by, "at": s.at}
-                    for s in i.settlements
-                ],
-                "dealer_confirmations": [
-                    {
-                        "id": dc.id, "dealer_code": dc.dealer_code,
-                        "status": dc.status,
-                        "signature_dealer_url": dc.signature_dealer_url,
-                        "signature_driver_url": dc.signature_driver_url,
-                        "created_at": dc.created_at,
-                        "return_record": {
-                            "driver": dc.return_record.driver,
-                            "return_date": dc.return_record.return_date,
-                            "notes": dc.return_record.notes,
-                        } if dc.return_record else None,
-                    }
-                    for dc in i.dealer_confirmations
-                ],
-            }
-            for i in pl.items
-        ],
-    }
+    return _serialize_picking_list(pl)
 
 
 @router.put("/{list_id}/items")
@@ -217,10 +179,12 @@ async def update_items(
     user: User = Depends(require_admin_kepala),
     db: AsyncSession = Depends(get_db),
 ):
-    pl = await picking_service.update_picking_items(db, list_id, items, user.name)
+    pl = await picking_service.update_picking_items(
+        db, list_id, items, user.name, user.id
+    )
     if not pl:
         raise HTTPException(status_code=404, detail="Picking list not found")
-    return pl
+    return _serialize_picking_list(pl)
 
 
 @router.post("/{list_id}/complete")
@@ -229,7 +193,7 @@ async def complete_picking(
     user: User = Depends(require_admin_kepala),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await picking_service.complete_picking(db, list_id, user.name)
+    result = await picking_service.complete_picking(db, list_id, user.name, user.id)
     if result is None:
         raise HTTPException(status_code=404, detail="Picking list not found")
     if "error" in result:
@@ -245,7 +209,7 @@ async def create_handover(
     db: AsyncSession = Depends(get_db),
 ):
     handover = await picking_service.create_handover(
-        db, list_id, data.model_dump(), user.name
+        db, list_id, data.model_dump(), user.name, user.id
     )
     if not handover:
         raise HTTPException(status_code=400, detail="Picking harus complete sebelum serah terima.")

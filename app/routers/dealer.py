@@ -40,7 +40,9 @@ async def confirm_item(
     if user.role != "dealer" or not user.dealer_code:
         raise HTTPException(status_code=403, detail="Akses hanya untuk dealer.")
     data["dealer_code"] = user.dealer_code
-    confirmation = await picking_service.create_dealer_confirmation(db, data, user.name)
+    confirmation = await picking_service.create_dealer_confirmation(
+        db, data, user.name, user.id
+    )
     if not confirmation:
         raise HTTPException(status_code=404, detail="Item tidak ditemukan.")
     return {"status": "ok", "id": confirmation.id}

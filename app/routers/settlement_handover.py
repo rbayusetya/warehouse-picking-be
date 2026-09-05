@@ -32,8 +32,8 @@ async def list_settlement_handovers(
                     "id": h.settlement.item.picking_list.id,
                     "picking_id": h.settlement.item.picking_list.picking_id,
                     "date": h.settlement.item.picking_list.date,
-                    "driver": h.settlement.item.picking_list.truck.driver_name,
-                    "expedition": h.settlement.item.picking_list.truck.expedition,
+                    "driver": h.settlement.item.picking_list.driver,
+                    "expedition": h.settlement.item.picking_list.expedition,
                 },
                 "item": {
                     "id": h.settlement.item.id,
@@ -54,7 +54,7 @@ async def create_settlement_handover(
     db: AsyncSession = Depends(get_db),
 ):
     handover = await picking_service.create_settlement_handover(
-        db, data.settlement_id, data.model_dump(), user.name,
+        db, data.settlement_id, data.model_dump(), user.name, user.id,
     )
     if not handover:
         raise HTTPException(status_code=400, detail="Settlement tidak ditemukan atau sudah di-handover.")
