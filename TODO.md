@@ -2,16 +2,16 @@
 
 ## Completed This Session ✅
 
-- [x] Normalize schema — added master tables (trucks, ksu_items, dealers, sales_orders)
+- [x] Normalize schema — added master tables (trucks, ksus, dealers, sales_orders, sales_order_items)
+- [x] Merge `dev_tata` schema adoption: `sales_order_items` SO lines, `ksus` natural key, dealer/user FKs, `Date` columns, audit FKs (`created_by_id`, `user_id`, `uploaded_by_id`)
+- [x] Remove unused M2M tables `sales_order_dealers` and `picking_list_sales_orders` (links derivable from `sales_order_items` and `picking_item_dealers.sales_order_id`)
+- [x] Re-apply `init_db` fix — Alembic wrapped in `asyncio.to_thread()` so the event loop isn't blocked at startup
 - [x] Update picking_lists to use `truck_id` FK (was flat expedition/plate/driver)
-- [x] Update picking_items to use `ksu_item_id` FK with snapshot columns (code/name/category)
+- [x] Update picking_items to use `ksu_code` FK (snapshot columns removed)
 - [x] Update picking_item_dealers to use `dealer_id` FK (was flat code/dealer name)
-- [x] Alembic migration — drops all tables, recreates with normalized schema
-- [x] Excel import upserts master tables (trucks, ksu_items, dealers, sales_orders)
 - [x] Update all service queries to use eager-loaded FK relationships
-- [x] Update all routers to serialize FK fields (l.truck.expedition, d.dealer.name)
+- [x] Update all routers to serialize via compat properties (`picking_id`, `no_ds`, `dealer_code`, …)
 - [x] Move `picking_excel.py` from project root into `backend/app/`
-- [x] Fix `init_db()` — wrap Alembic in `asyncio.to_thread()` to unblock event loop
 - [x] Add `SCHEMA.md` with finalized ERD in Mermaid format
 - [x] Verify full flow: Docker build, migration, seed, login, upload, dashboard
 
@@ -34,3 +34,4 @@
 - [ ] Add request/response logging middleware
 - [ ] Add OpenAPI docs customization (tag descriptions, examples)
 - [ ] Add database backup/restore scripts
+- [ ] Replace broken macOS `.venv` artifact in repo (it's not git-tracked; consider deleting locally and recreating per OS)

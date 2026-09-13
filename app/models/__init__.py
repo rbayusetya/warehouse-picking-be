@@ -11,7 +11,6 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     String,
-    Table,
     Text,
     UniqueConstraint,
 )
@@ -28,21 +27,6 @@ def _now() -> datetime:
     return datetime.utcnow()
 
 
-sales_order_dealers = Table(
-    "sales_order_dealers",
-    Base.metadata,
-    Column("sales_order_id", String(36), ForeignKey("sales_orders.id"), primary_key=True),
-    Column("dealer_id", String(36), ForeignKey("dealers.id"), primary_key=True),
-)
-
-picking_list_sales_orders = Table(
-    "picking_list_sales_orders",
-    Base.metadata,
-    Column("picking_list_id", String(36), ForeignKey("picking_lists.id"), primary_key=True),
-    Column("sales_order_id", String(36), ForeignKey("sales_orders.id"), primary_key=True),
-)
-
-
 class Dealer(Base):
     __tablename__ = "dealers"
 
@@ -54,11 +38,6 @@ class Dealer(Base):
     users = relationship("User", back_populates="dealer")
     picking_allocations = relationship("PickingItemDealer", back_populates="dealer")
     confirmations = relationship("DealerConfirmation", back_populates="dealer")
-    sales_orders = relationship(
-        "SalesOrder",
-        secondary=sales_order_dealers,
-        back_populates="dealers",
-    )
 
 
 class Truck(Base):
@@ -94,22 +73,12 @@ class SalesOrder(Base):
     sales_order_number = Column(String(100), nullable=False, unique=True, index=True)
     created_at = Column(DateTime, default=_now, nullable=False)
 
-    dealers = relationship(
-        "Dealer",
-        secondary=sales_order_dealers,
-        back_populates="sales_orders",
-    )
     items = relationship(
         "SalesOrderItem",
         back_populates="sales_order",
         cascade="all, delete-orphan",
     )
     picking_allocations = relationship("PickingItemDealer", back_populates="sales_order")
-    picking_lists = relationship(
-        "PickingList",
-        secondary=picking_list_sales_orders,
-        back_populates="sales_orders",
-    )
 
 
 class SalesOrderItem(Base):
@@ -184,11 +153,6 @@ class PickingList(Base):
         "User",
         back_populates="created_picking_lists",
         foreign_keys=[created_by_id],
-    )
-    sales_orders = relationship(
-        "SalesOrder",
-        secondary=picking_list_sales_orders,
-        back_populates="picking_lists",
     )
     items = relationship(
         "PickingItem",

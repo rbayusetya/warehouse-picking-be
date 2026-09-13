@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.services import s3_service
 
-from picking_excel import parse_picking_workbook
+from app.picking_excel import parse_picking_workbook
 
 
 def _now_text() -> str:
@@ -210,11 +210,6 @@ async def import_excel(
                         sales_order = SalesOrder(sales_order_number=no_so)
                         orders_by_number[no_so] = sales_order
                         db.add(sales_order)
-                    if dealer not in sales_order.dealers:
-                        sales_order.dealers.append(dealer)
-                    if sales_order not in picking_list.sales_orders:
-                        picking_list.sales_orders.append(sales_order)
-
                     key = (no_so, dealer_code, code)
                     sales_order_item = order_items_by_key.get(key)
                     if sales_order_item is None:

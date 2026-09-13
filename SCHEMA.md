@@ -1,7 +1,8 @@
 # Database Schema
 
 > Normalized schema for the Picking Control Gudang application.
-> All data is seeded from Excel imports. Master tables are auto-created during import.
+> Data is seeded from Excel imports; master tables are upserted during import.
+> Schema source of truth: `app/models/__init__.py` (Alembic migration `c1a4f7b2d901` mirrors it via `Base.metadata`).
 
 ---
 
@@ -11,55 +12,67 @@
 erDiagram
     %% ─── Master Tables ───
 
-    USERS {
+    DEALERS {
         uuid id PK
-        varchar username UK "NOT_NULL"
-        varchar password_hash "NOT_NULL"
+        varchar code UK "NOT_NULL"
         varchar name "NOT_NULL"
-        varchar role "NOT_NULL admin|kepala|ekspedisi|dealer"
-        varchar role_label "NOT_NULL"
-        varchar expedition "NULLABLE ekspedisi only"
-        varchar dealer_code "NULLABLE dealer only"
-        boolean is_active "DEFAULT true"
         datetime created_at
     }
 
     TRUCKS {
         uuid id PK
-        varchar expedition "NOT_NULL"
-        varchar plate "NOT_NULL"
+        varchar expedition_name "NOT_NULL"
+        varchar plate_number UK "NOT_NULL"
         varchar driver_name "NOT_NULL"
+        datetime created_at
+        datetime updated_at
     }
 
-    KSU_ITEMS {
-        uuid id PK
-        varchar code "NOT_NULL UK"
+    KSUS {
+        varchar code PK "natural key"
+        varchar type "NOT_NULL category"
         varchar name "NOT_NULL"
-        varchar category "NOT_NULL"
-    }
-
-    DEALERS {
-        uuid id PK
-        varchar code "NOT_NULL UK"
-        varchar name "NOT_NULL"
+        datetime created_at
+        datetime updated_at
     }
 
     SALES_ORDERS {
         uuid id PK
-        varchar so_number "NOT_NULL UK"
-        varchar ksu_item_id FK "NOT_NULL"
-        float ksu_quantity "NOT_NULL"
-        varchar dealer_id FK "NOT_NULL"
+        varchar sales_order_number UK "NOT_NULL"
+        datetime created_at
+    }
+
+    SALES_ORDER_ITEMS {
+        uuid id PK
+        uuid sales_order_id FK "NOT_NULL"
+        uuid dealer_id FK "NOT_NULL"
+        varchar ksu_code FK "NOT_NULL to ksus.code"
+        float ordered_qty "DEFAULT 0"
+    }
+
+    USERS {
+        uuid id PK
+        varchar username UK "NOT_NULL"
+        varchar password_hash "NOT_NULL"
+        varchar name "NOT_NULL"
+        varchar email UK "NOT_NULL"
+        varchar role "NOT_NULL admin|kepala|ekspedisi|dealer"
+        varchar role_label "NOT_NULL"
+        varchar expedition "NULLABLE ekspedisi only"
+        uuid dealer_id FK "NULLABLE dealer only"
+        boolean is_active "DEFAULT true"
+        datetime created_at
     }
 
     %% ─── Transaction Tables ───
 
     PICKING_LISTS {
         uuid id PK
-        varchar picking_id "NOT_NULL UK No Picking List"
-        varchar date "NOT_NULL"
-        varchar no_ds "NULLABLE Delivery Schedule"
+        varchar picking_number UK "NOT_NULL No Picking List"
+        varchar delivery_schedule_number "NULLABLE No DS"
+        date date_time "NOT_NULL"
         uuid truck_id FK "NOT_NULL"
+        uuid created_by_id FK "NULLABLE users"
         varchar status "DEFAULT draft draft|picked|handover_completed|closed"
         varchar source_file "NULLABLE"
         datetime created_at
@@ -69,10 +82,7 @@ erDiagram
     PICKING_ITEMS {
         uuid id PK
         uuid picking_list_id FK "NOT_NULL"
-        uuid ksu_item_id FK "NOT_NULL"
-        varchar code "NOT_NULL snapshot from KSU"
-        varchar name "NOT_NULL snapshot from KSU"
-        varchar category "NOT_NULL snapshot from KSU"
+        varchar ksu_code FK "NOT_NULL to ksus.code"
         float planned_qty "DEFAULT 0"
         float actual_qty "DEFAULT 0"
         boolean confirmed "DEFAULT false"
@@ -82,8 +92,9 @@ erDiagram
     PICKING_ITEM_DEALERS {
         uuid id PK
         uuid picking_item_id FK "NOT_NULL"
+        uuid sales_order_id FK "NULLABLE"
+        uuid sales_order_item_id FK "NULLABLE"
         uuid dealer_id FK "NOT_NULL"
-        varchar no_so "NULLABLE Sales Order number"
         float qty "DEFAULT 0"
     }
 
@@ -96,18 +107,20 @@ erDiagram
         varchar driver_name "NOT_NULL"
         text signature_admin_url "NULLABLE"
         text signature_driver_url "NULLABLE"
-        varchar created_by "NULLABLE"
-        varchar created_at "NOT_NULL"
+        uuid created_by_id FK "NULLABLE users"
+        varchar created_by "NULLABLE name snapshot"
+        varchar created_at "NOT_NULL text timestamp"
     }
 
     SETTLEMENTS {
         uuid id PK
         uuid picking_item_id FK "NOT_NULL"
         float qty "NOT_NULL"
-        varchar date "NOT_NULL"
+        date date "NOT_NULL"
         varchar driver "NOT_NULL"
         text note "DEFAULT empty"
         varchar by "NULLABLE"
+        uuid created_by_id FK "NULLABLE users"
         varchar at "NOT_NULL"
     }
 
@@ -118,14 +131,15 @@ erDiagram
         varchar driver_name "NOT_NULL"
         text signature_admin_url "NULLABLE"
         text signature_driver_url "NULLABLE"
-        varchar created_by "NULLABLE"
-        varchar created_at "NOT_NULL"
+        uuid created_by_id FK "NULLABLE users"
+        varchar created_by "NULLABLE name snapshot"
+        varchar created_at "NOT_NULL text timestamp"
     }
 
     DEALER_CONFIRMATIONS {
         uuid id PK
         uuid picking_item_id FK "NOT_NULL"
-        varchar dealer_code "NOT_NULL"
+        uuid dealer_id FK "NOT_NULL"
         varchar status "NOT_NULL match|shortage|excess"
         text signature_dealer_url "NULLABLE"
         text signature_driver_url "NULLABLE"
@@ -136,13 +150,16 @@ erDiagram
         uuid id PK
         uuid dealer_confirmation_id FK "NOT_NULL UK"
         varchar driver "NOT_NULL"
-        varchar return_date "NOT_NULL"
+        date return_date "NOT_NULL"
         text notes "DEFAULT empty"
+        text signature_dealer_url "NULLABLE"
+        text signature_driver_url "NULLABLE"
     }
 
     HISTORY_ENTRIES {
         uuid id PK
         uuid picking_list_id FK "NOT_NULL"
+        uuid user_id FK "NULLABLE users"
         varchar at "NOT_NULL"
         varchar by "NULLABLE"
         text text "NOT_NULL"
@@ -153,38 +170,56 @@ erDiagram
         varchar filename "NOT_NULL"
         varchar original_name "NOT_NULL"
         text file_url "NULLABLE"
-        varchar uploaded_by "NULLABLE"
+        uuid uploaded_by_id FK "NULLABLE users"
+        varchar uploaded_by "NULLABLE name snapshot"
         datetime created_at
     }
 
     %% ─── Relationships ───
 
-    USERS ||--o{ PICKING_LISTS : "uploads import"
+    DEALERS ||--o{ USERS : "dealer accounts"
+    DEALERS ||--|{ SALES_ORDER_ITEMS : "ordered by"
+    KSUS ||--|{ SALES_ORDER_ITEMS : "listed in"
+    SALES_ORDERS ||--|{ SALES_ORDER_ITEMS : "contains"
 
-    TRUCKS ||--|{ PICKING_LISTS : "assigned to"
+    TRUCKS ||--o{ PICKING_LISTS : "assigned to"
+    USERS ||--o{ PICKING_LISTS : "created by"
 
     PICKING_LISTS ||--|{ PICKING_ITEMS : "contains"
     PICKING_LISTS ||--o| HANDOVERS : "has"
     PICKING_LISTS ||--|{ HISTORY_ENTRIES : "tracked by"
 
-    KSU_ITEMS ||--|{ PICKING_ITEMS : "references"
-    KSU_ITEMS ||--o{ SALES_ORDERS : "listed in"
+    KSUS ||--|{ PICKING_ITEMS : "referenced by"
 
     PICKING_ITEMS ||--|{ PICKING_ITEM_DEALERS : "distributed to"
-    PICKING_ITEMS ||--|{ SETTLEMENTS : "paid via"
-    PICKING_ITEMS ||--|{ DEALER_CONFIRMATIONS : "confirmed by"
-
     DEALERS ||--|{ PICKING_ITEM_DEALERS : "receives"
-    DEALERS ||--o{ SALES_ORDERS : "owns"
+    SALES_ORDERS ||--o{ PICKING_ITEM_DEALERS : "allocated via"
+    SALES_ORDER_ITEMS ||--o{ PICKING_ITEM_DEALERS : "fulfilled by"
 
+    PICKING_ITEMS ||--|{ SETTLEMENTS : "paid via"
     SETTLEMENTS ||--o| SETTLEMENT_HANDOVERS : "signed off"
 
+    PICKING_ITEMS ||--|{ DEALER_CONFIRMATIONS : "confirmed by"
+    DEALERS ||--|{ DEALER_CONFIRMATIONS : "confirms"
     DEALER_CONFIRMATIONS ||--o| DEALER_RETURNS : "may return"
+
+    USERS ||--o{ HISTORY_ENTRIES : "acted in"
 ```
+
+### Design notes
+
+- **`ksus` uses its natural key (`code`) as primary key** — no surrogate UUID duplicating the business key. `picking_items.ksu_code` and `sales_order_items.ksu_code` reference it directly.
+- **`sales_order_items`** is the normalized SO line: one sales order can contain many (dealer, KSU) lines, each with its own `ordered_qty`. Uniqueness is enforced per `(sales_order_id, dealer_id, ksu_code)`; re-imports accumulate quantity instead of duplicating rows.
+- **No snapshot columns on `picking_items`** — item name/category always come from `ksus` via the `ksu_code` FK (eager-loaded with `lazy="joined"`), so master corrections apply everywhere.
+- **No `sales_order_dealers` / `picking_list_sales_orders` join tables** — the SO↔dealer and SO↔picking-list links are fully derivable from `sales_order_items` and `picking_item_dealers.sales_order_id` respectively.
+- **Audit references are FKs**: `created_by_id` / `user_id` / `uploaded_by_id` point at `users.id`; the parallel `created_by` / `by` / `uploaded_by` name columns are kept as display snapshots.
+- **Dates are typed** (`Date`) in `picking_lists`, `settlements`, and `dealer_returns`; older text timestamps in `handovers`/`settlements.at` remain for API compatibility.
 
 ---
 
-## Views
+## Views (planned — not yet created)
+
+> These are the target definitions from the open TODO item; column names match the current schema.
 
 ### `v_picking_totals`
 
@@ -194,11 +229,12 @@ Aggregated totals per picking list. Used by dashboard stats and debt calculation
 CREATE OR REPLACE VIEW v_picking_totals AS
 SELECT
     pl.id AS picking_list_id,
-    pl.picking_id,
-    pl.date,
+    pl.picking_number,
+    pl.date_time,
     pl.status,
-    pl.expedition,
-    pl.driver,
+    t.expedition_name,
+    t.plate_number,
+    t.driver_name,
     COALESCE(SUM(pi.planned_qty), 0) AS total_planned,
     COALESCE(SUM(pi.actual_qty), 0) AS total_actual,
     COALESCE(SUM(pi.confirmed::int), 0) AS confirmed_count,
@@ -214,8 +250,9 @@ SELECT
         ELSE 0
     END AS total_debt
 FROM picking_lists pl
+LEFT JOIN trucks t ON t.id = pl.truck_id
 LEFT JOIN picking_items pi ON pi.picking_list_id = pl.id
-GROUP BY pl.id;
+GROUP BY pl.id, t.expedition_name, t.plate_number, t.driver_name;
 ```
 
 ### `v_item_dealer_summary`
@@ -226,26 +263,29 @@ Per-item dealer distribution. Used by dealer page and dashboard dealer summary.
 CREATE OR REPLACE VIEW v_item_dealer_summary AS
 SELECT
     pi.id AS picking_item_id,
-    pi.code AS item_code,
-    pi.name AS item_name,
-    pi.category AS item_category,
+    pi.ksu_code AS item_code,
+    k.name AS item_name,
+    k.type AS item_category,
     pi.planned_qty,
     pi.actual_qty,
-    pl.picking_id,
-    pl.date,
-    pl.driver,
-    pl.expedition,
+    pl.picking_number,
+    pl.date_time,
+    t.driver_name,
+    t.expedition_name,
     d.id AS dealer_id,
     d.code AS dealer_code,
     d.name AS dealer_name,
     pid.qty AS dealer_qty,
-    pid.no_so,
+    so.sales_order_number AS no_so,
     dc.status AS confirmation_status
 FROM picking_items pi
+JOIN ksus k ON k.code = pi.ksu_code
 JOIN picking_lists pl ON pl.id = pi.picking_list_id
+LEFT JOIN trucks t ON t.id = pl.truck_id
 JOIN picking_item_dealers pid ON pid.picking_item_id = pi.id
 JOIN dealers d ON d.id = pid.dealer_id
-LEFT JOIN dealer_confirmations dc ON dc.picking_item_id = pi.id AND dc.dealer_code = d.code;
+LEFT JOIN sales_orders so ON so.id = pid.sales_order_id
+LEFT JOIN dealer_confirmations dc ON dc.picking_item_id = pi.id AND dc.dealer_id = d.id;
 ```
 
 ### `v_expedition_stats`
@@ -255,19 +295,20 @@ Per-expedition breakdown. Used by dashboard expedition table.
 ```sql
 CREATE OR REPLACE VIEW v_expedition_stats AS
 SELECT
-    t.expedition,
-    t.plate,
+    t.expedition_name,
+    t.plate_number,
     t.driver_name,
     COUNT(pl.id) AS total_lists,
     COUNT(pl.id) FILTER (WHERE pl.status = 'draft') AS draft_count,
     COUNT(pl.id) FILTER (WHERE pl.status = 'picked') AS picked_count,
-    COUNT(pl.id) FILTER (WHERE pl.handover_id IS NOT NULL) AS handover_count,
+    COUNT(h.id) AS handover_count,
     COALESCE(SUM(vpt.total_planned), 0) AS total_items,
     COALESCE(SUM(vpt.total_debt), 0) AS total_debt
 FROM trucks t
 LEFT JOIN picking_lists pl ON pl.truck_id = t.id
+LEFT JOIN handovers h ON h.picking_list_id = pl.id
 LEFT JOIN v_picking_totals vpt ON vpt.picking_list_id = pl.id
-GROUP BY t.id, t.expedition, t.plate, t.driver_name;
+GROUP BY t.id, t.expedition_name, t.plate_number, t.driver_name;
 ```
 
 ### `v_driver_stats`
@@ -278,17 +319,18 @@ Per-driver breakdown. Used by dashboard driver table.
 CREATE OR REPLACE VIEW v_driver_stats AS
 SELECT
     t.driver_name,
-    t.expedition,
+    t.expedition_name,
     COUNT(pl.id) AS total_lists,
     COUNT(pl.id) FILTER (WHERE pl.status = 'draft') AS draft_count,
     COUNT(pl.id) FILTER (WHERE pl.status = 'picked') AS picked_count,
-    COUNT(pl.id) FILTER (WHERE pl.handover_id IS NOT NULL) AS handover_count,
+    COUNT(h.id) AS handover_count,
     COALESCE(SUM(vpt.total_planned), 0) AS total_items,
     COALESCE(SUM(vpt.total_debt), 0) AS total_debt
 FROM trucks t
 LEFT JOIN picking_lists pl ON pl.truck_id = t.id
+LEFT JOIN handovers h ON h.picking_list_id = pl.id
 LEFT JOIN v_picking_totals vpt ON vpt.picking_list_id = pl.id
-GROUP BY t.id, t.driver_name, t.expedition;
+GROUP BY t.id, t.driver_name, t.expedition_name;
 ```
 
 ### `v_dealer_confirmation_stats`
@@ -309,7 +351,7 @@ SELECT
 FROM dealers d
 JOIN picking_item_dealers pid ON pid.dealer_id = d.id
 JOIN picking_items pi ON pi.id = pid.picking_item_id
-LEFT JOIN dealer_confirmations dc ON dc.picking_item_id = pi.id AND dc.dealer_code = d.code
+LEFT JOIN dealer_confirmations dc ON dc.picking_item_id = pi.id AND dc.dealer_id = d.id
 GROUP BY d.id, d.code, d.name;
 ```
 
@@ -319,26 +361,27 @@ GROUP BY d.id, d.code, d.name;
 
 | Category | Table | Purpose |
 |----------|-------|---------|
-| **Master** | `users` | Authentication & roles |
-| **Master** | `trucks` | Expedition/plate/driver lookup |
-| **Master** | `ksu_items` | Product catalog (code, name, category) |
+| **Master** | `users` | Authentication & roles (FK to dealers) |
+| **Master** | `trucks` | Expedition/plate/driver lookup (unique plate) |
+| **Master** | `ksus` | Product catalog, natural key `code` |
 | **Master** | `dealers` | Dealer directory |
-| **Master** | `sales_orders` | Sales order → product → dealer link |
-| **Transaction** | `picking_lists` | Picking list headers |
-| **Transaction** | `picking_items` | Picking list line items (with KSU snapshot) |
-| **Transaction** | `picking_item_dealers` | Dealer assignments per item |
+| **Master** | `sales_orders` | Sales order headers (number only) |
+| **Master** | `sales_order_items` | SO lines: (order, dealer, KSU) + ordered qty |
+| **Transaction** | `picking_lists` | Picking list headers (FK truck, created_by) |
+| **Transaction** | `picking_items` | Picking list line items (FK ksu_code) |
+| **Transaction** | `picking_item_dealers` | Dealer allocations per item (FK dealer, sales_order, sales_order_item) |
 | **Operational** | `handovers` | Admin → driver sign-off |
 | **Operational** | `settlements` | Debt payment records |
 | **Operational** | `settlement_handovers` | Settlement sign-off |
-| **Operational** | `dealer_confirmations` | Dealer receipt status |
+| **Operational** | `dealer_confirmations` | Dealer receipt status (FK dealer) |
 | **Operational** | `dealer_returns` | Return records |
-| **Operational** | `history_entries` | Audit trail |
+| **Operational** | `history_entries` | Audit trail (FK user) |
 | **Operational** | `uploaded_files` | File upload tracking |
-| **View** | `v_picking_totals` | Aggregated totals per list |
-| **View** | `v_item_dealer_summary` | Item → dealer distribution |
-| **View** | `v_expedition_stats` | Per-expedition breakdown |
-| **View** | `v_driver_stats` | Per-driver breakdown |
-| **View** | `v_dealer_confirmation_stats` | Dealer confirmation summary |
+| **View** | `v_picking_totals` | Aggregated totals per list (planned) |
+| **View** | `v_item_dealer_summary` | Item → dealer distribution (planned) |
+| **View** | `v_expedition_stats` | Per-expedition breakdown (planned) |
+| **View** | `v_driver_stats` | Per-driver breakdown (planned) |
+| **View** | `v_dealer_confirmation_stats` | Dealer confirmation summary (planned) |
 
 ---
 
@@ -347,13 +390,14 @@ GROUP BY d.id, d.code, d.name;
 When an Excel file is uploaded:
 
 1. **Parse Excel** → extract picking lists, items, dealer assignments
-2. **Upsert `trucks`** → deduplicate by (expedition, plate, driver_name)
-3. **Upsert `ksu_items`** → deduplicate by (code, name, category)
-4. **Upsert `dealers`** → deduplicate by (code)
-5. **Upsert `sales_orders`** → deduplicate by (so_number) if present
-6. **Insert `picking_lists`** → FK to truck_id
-7. **Insert `picking_items`** → FK to ksu_item_id, snapshot code/name/category
-8. **Insert `picking_item_dealers`** → FK to dealer_id, link to sales order
-9. **Insert `history_entries`** → audit trail
+2. **Upsert `trucks`** → deduplicate by `plate_number` (unique)
+3. **Upsert `ksus`** → deduplicate by `code` (primary key); refresh `name`/`type` from the file
+4. **Upsert `dealers`** → deduplicate by `code`; refresh `name`
+5. **Upsert `sales_orders`** → deduplicate by `sales_order_number`
+6. **Upsert `sales_order_items`** → deduplicate by (`sales_order_id`, `dealer_id`, `ksu_code`); accumulate `ordered_qty` on repeat
+7. **Insert `picking_lists`** → FK to `truck_id`
+8. **Insert `picking_items`** → FK to `ksu_code`
+9. **Insert `picking_item_dealers`** → FK to `dealer_id`, `sales_order_id`, `sales_order_item_id`
+10. **Insert `history_entries`** → audit trail
 
-All master table operations are **upsert** (insert or update on conflict) so re-importing the same Excel doesn't create duplicates.
+All master table operations are **upsert** (insert or update) so re-importing the same Excel doesn't create duplicates. Unique constraints at the DB level (`uq_sales_order_item_dealer_ksu`, `uq_picking_item_dealer_sales_order`, `uq_dealer_confirmation_item_dealer`) guard the same rules for any other write path.

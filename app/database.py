@@ -22,9 +22,14 @@ async def get_db():
 
 
 async def init_db():
-    # Run Alembic migrations synchronously before uvicorn starts
+    # Run Alembic migrations in a worker thread so the event loop is not blocked
+    # during startup (uvicorn only needs the loop free once this coroutine ends).
+    import asyncio
     from alembic.config import Config
     from alembic.command import upgrade
 
-    alembic_cfg = Config("alembic.ini")
-    upgrade(alembic_cfg, "head")
+    def _run_migration():
+        alembic_cfg = Config("alembic.ini")
+        upgrade(alembic_cfg, "head")
+
+    await asyncio.to_thread(_run_migration)
