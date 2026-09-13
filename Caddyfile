@@ -1,0 +1,20 @@
+# Backend API gateway.
+# Binds the container port; the host port is mapped in docker-compose.
+# `backend` must match the compose service key for this repo.
+:15000 {
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /docs {
+		reverse_proxy backend:8000
+	}
+
+	handle /docs/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /openapi.json {
+		reverse_proxy backend:8000
+	}
+}
