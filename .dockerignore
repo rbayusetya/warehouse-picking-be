@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-linux/
+
+# Environments & secrets
+.env
+.env.*
+
+# Tooling
+.git/
+.idea/
+.DS_Store
+
+# Local data & scratch DBs
+data/
+*.db
+
+# Docker/infra files not needed inside the image
+Dockerfile
+.dockerignore
+Caddyfile

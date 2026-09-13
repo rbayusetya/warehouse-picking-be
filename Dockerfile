@@ -9,11 +9,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python deps
-COPY backend/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt aiosqlite psycopg2-binary
 
 # Copy app code
-COPY backend/ .
+COPY . .
 
 RUN chmod +x /app/docker-entrypoint.sh
 
